@@ -17,10 +17,10 @@ if not os.path.exists(STATIC_DIR):
 def get_db_connection():
     try:
         connection = psycopg2.connect(
-            dbname="tcc_wt2c",
+            dbname="tcc_mlul",
             user="guilherme",
-            password="ArRqQLQVOtJcdPs8DZLVmGWHxZy2ZJR6",
-            host="dpg-crb3dsjtq21c73cf85rg-a.oregon-postgres.render.com",
+            password="UHnP3RoMsq3qcWMJVPHQ7LtFq4zbD9yQ",
+            host="dpg-crvgsa08fa8c739a75l0-a.oregon-postgres.render.com",
             port="5432"
         )
         print("Conectado ao banco de dados.")
