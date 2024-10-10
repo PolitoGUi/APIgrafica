@@ -1,17 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import psycopg2
-import pandas as pd
-import matplotlib.pyplot as plt
-import os
-from fastapi.responses import FileResponse
 
 app = FastAPI()
-
-# Diretório onde o gráfico será salvo
-STATIC_DIR = 'static'
-if not os.path.exists(STATIC_DIR):
-    os.makedirs(STATIC_DIR)
 
 # Conectar ao banco de dados PostgreSQL
 def get_db_connection():
@@ -23,110 +14,78 @@ def get_db_connection():
             host="dpg-crvgsa08fa8c739a75l0-a.oregon-postgres.render.com",
             port="5432"
         )
-        print("Conectado ao banco de dados.")
         return connection
     except Exception as e:
-        print(f"Erro ao conectar ao banco de dados: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao conectar ao banco de dados")
+        raise HTTPException(status_code=500, detail=f"Erro ao conectar ao banco de dados: {e}")
 
-# Atualiza o gráfico de vendas
-def update_sales_chart():
-    connection = get_db_connection()
-    query = """
-    SELECT nome_produto, COUNT(*) AS quantidade_vendida
-    FROM pedidos
-    GROUP BY nome_produto
-    ORDER BY quantidade_vendida DESC
-    """
-    try:
-        df = pd.read_sql_query(query, connection)
-        plt.figure(figsize=(10, 6))
-        plt.bar(df['nome_produto'], df['quantidade_vendida'])
-        plt.xlabel('Nome do Produto')
-        plt.ylabel('Quantidade Vendida')
-        plt.title('Quantidade de Produtos Vendidos')
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        chart_path = os.path.join(STATIC_DIR, 'sales_chart.png')
-        plt.savefig(chart_path)
-        plt.close()
-        print("Gráfico atualizado com sucesso.")
-    except Exception as e:
-        print(f"Erro ao atualizar o gráfico: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao atualizar o gráfico")
-    finally:
-        connection.close()
-
-# Modelo de dados usando Pydantic
-class SensorData(BaseModel):
-    esp_id: str
+# Modelo de dados
+class ProdutoRFID(BaseModel):
     rfid: str
-    peso: float
-    preco: float
-    nome: str
 
-@app.post("/sensor_data/")
-def insert_sensor_data(sensor_data: SensorData):
+# Adicionar item à tabela 'pedidos' com base no RFID
+@app.post("/adicionar_pedido/")
+def adicionar_pedido(produto_rfid: ProdutoRFID):
     connection = get_db_connection()
     cursor = connection.cursor()
 
     try:
+        # Verificar se o RFID corresponde a um produto
         cursor.execute("""
-            INSERT INTO sensor_data (esp_id, rfid, peso, preco, nome)
-            VALUES (%(esp_id)s, %(rfid)s, %(peso)s, %(preco)s, %(nome)s)
-        """, sensor_data.dict())
+            SELECT nome_produto, preco FROM produtos WHERE rfid = %s
+        """, (produto_rfid.rfid,))
+        produto = cursor.fetchone()
+
+        if not produto:
+            raise HTTPException(status_code=404, detail="Produto não encontrado para o RFID fornecido")
+
+        nome_produto, preco = produto
+
+        # Inserir na tabela de pedidos
+        cursor.execute("""
+            INSERT INTO pedidos (nome_produto, preco, quantidade, hora)
+            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+        """, (nome_produto, preco, 1))  # Quantidade pode ser ajustada conforme necessário
         connection.commit()
-        return {"message": "Dados inseridos com sucesso"}
+
+        return {"message": f"Pedido de {nome_produto} adicionado com sucesso"}
     except Exception as e:
         connection.rollback()
-        print(f"Erro ao inserir dados: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao inserir dados no banco de dados")
+        raise HTTPException(status_code=500, detail=f"Erro ao adicionar pedido: {e}")
     finally:
         cursor.close()
         connection.close()
 
-@app.get("/sensor_data/{sensor_id}")
-def get_sensor_data(sensor_id: int):
+# Verificar um pedido com base no RFID
+@app.get("/verificar_pedido/{rfid}")
+def verificar_pedido(rfid: str):
     connection = get_db_connection()
     cursor = connection.cursor()
 
     try:
-        cursor.execute("SELECT * FROM sensor_data WHERE id = %s", (sensor_id,))
-        row = cursor.fetchone()
-        if row:
-            return {
-                "id": row[0],
-                "esp_id": row[1],
-                "rfid": row[2],
-                "peso": row[3],
-                "preco": row[4],
-                "nome": row[5]
-            }
-        else:
-            raise HTTPException(status_code=404, detail="Dados não encontrados")
+        # Verificar pedido com base no RFID
+        cursor.execute("""
+            SELECT p.id, p.nome_produto, p.preco, p.quantidade, p.hora 
+            FROM pedidos p
+            JOIN produtos pr ON pr.nome_produto = p.nome_produto
+            WHERE pr.rfid = %s
+        """, (rfid,))
+        pedido = cursor.fetchone()
+
+        if not pedido:
+            raise HTTPException(status_code=404, detail="Pedido não encontrado para o RFID fornecido")
+
+        return {
+            "id": pedido[0],
+            "nome_produto": pedido[1],
+            "preco": pedido[2],
+            "quantidade": pedido[3],
+            "hora": pedido[4]
+        }
     except Exception as e:
-        print(f"Erro ao consultar dados: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao consultar dados no banco de dados")
+        raise HTTPException(status_code=500, detail=f"Erro ao verificar pedido: {e}")
     finally:
         cursor.close()
         connection.close()
-
-@app.post("/update_chart")
-def trigger_chart_update():
-    try:
-        update_sales_chart()
-        return {"message": "Gráfico atualizado com sucesso"}
-    except Exception as e:
-        print(f"Erro ao atualizar gráfico: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao atualizar gráfico")
-
-@app.get("/sales_chart")
-def get_sales_chart():
-    chart_path = os.path.join(STATIC_DIR, 'sales_chart.png')
-    if os.path.exists(chart_path):
-        return FileResponse(chart_path)
-    else:
-        raise HTTPException(status_code=404, detail="Gráfico não encontrado")
 
 if __name__ == "__main__":
     import uvicorn
