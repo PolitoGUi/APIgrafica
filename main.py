@@ -14,6 +14,7 @@ def get_db_connection():
             password="UHnP3RoMsq3qcWMJVPHQ7LtFq4zbD9yQ",
             host="dpg-crvgsa08fa8c739a75l0-a.oregon-postgres.render.com",
             port="5432"
+            sslmode="require" 
         )
         return connection
     except Exception as e:
