@@ -1,155 +1,75 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import psycopg2
-import os
-import traceback
 
 app = FastAPI()
 
-# Conectar ao banco de dados PostgreSQL
 def get_db_connection():
-    try:
-        connection = psycopg2.connect(
-            dbname="tcc_mlul",
-            user="guilherme",
-            password="UHnP3RoMsq3qcWMJVPHQ7LtFq4zbD9yQ",
-            host="dpg-crvgsa08fa8c739a75l0-a.oregon-postgres.render.com",
-            port="5432"
-        )
-        print("Conectado ao banco de dados.")
-        return connection
-    except Exception as e:
-        print(f"Erro ao conectar ao banco de dados: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao conectar ao banco de dados")
+    return psycopg2.connect(
+        dbname="tcc_mlul",
+        user="guilherme",
+        password="UHnP3RoMsq3qcWMJVPHQ7LtFq4zbD9yQ",
+        host="dpg-crvgsa08fa8c739a75l0-a.oregon-postgres.render.com",
+        port="5432"
+    )
 
-# Modelo de dados usando Pydantic
-class SensorData(BaseModel):
-    esp_id: str
-    rfid: str
-    peso: float
-    preco: float
-    nome: str
-
-class MovePedido(BaseModel):
+class RFIDData(BaseModel):
     rfid: str
 
 @app.post("/sensor_data/")
-def insert_sensor_data(sensor_data: SensorData):
+def process_rfid(data: RFIDData):
     connection = get_db_connection()
     cursor = connection.cursor()
 
     try:
-        cursor.execute("""
-            INSERT INTO sensor_data (esp_id, rfid, peso, preco, nome)
-            VALUES (%(esp_id)s, %(rfid)s, %(peso)s, %(preco)s, %(nome)s)
-        """, sensor_data.dict())
-        connection.commit()
-        return {"message": "Dados inseridos com sucesso"}
-    except Exception as e:
-        connection.rollback()
-        print(f"Erro ao inserir dados: {e}")
-        print(traceback.format_exc())  # Exibir o traceback do erro
-        raise HTTPException(status_code=500, detail="Erro ao inserir dados no banco de dados")
-    finally:
-        cursor.close()
-        connection.close()
-
-@app.post("/mover_pedidos/")
-def mover_pedidos(mover_pedido: MovePedido):
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
-    try:
-        # Selecionar o nome do produto pelo RFID
-        cursor.execute("SELECT nome_produto FROM produtos WHERE rfid = %s", (mover_pedido.rfid,))
+        # Verificar se o RFID corresponde a algum produto
+        cursor.execute("SELECT nome_produto FROM produtos WHERE rfid = %s", (data.rfid,))
         produto = cursor.fetchone()
 
         if not produto:
-            return {"message": "Nenhum produto encontrado para o RFID fornecido."}
+            raise HTTPException(status_code=404, detail=f"Produto não encontrado para o RFID {data.rfid}")
 
         nome_produto = produto[0]
+        print(f"Produto encontrado: {nome_produto}")
 
-        # Selecionar os pedidos correspondentes ao nome do produto
+        # Buscar o primeiro pedido correspondente ao nome do produto
         cursor.execute("""
-            SELECT id, quantidade, preco, hora
-            FROM pedidos
-            WHERE nome_produto = %s
+            SELECT id, nome, nome_produto, preco, quantidade, hora 
+            FROM pedidos WHERE nome_produto = %s ORDER BY id ASC LIMIT 1
         """, (nome_produto,))
-        pedidos = cursor.fetchall()
+        pedido = cursor.fetchone()
 
-        if not pedidos:
-            return {"message": "Nenhum pedido encontrado para o produto correspondente."}
+        if not pedido:
+            raise HTTPException(status_code=404, detail=f"Nenhum pedido encontrado para o produto {nome_produto}")
 
-        for pedido in pedidos:
-            # Inserir o pedido na tabela pedidos_feitos
+        pedido_id, nome, nome_produto, preco, quantidade, hora = pedido
+        print(f"Pedido encontrado: ID={pedido_id}, Nome={nome}, Produto={nome_produto}, Preço={preco}, Quantidade={quantidade}")
+
+        if quantidade > 1:
+            # Se a quantidade for maior que 1, apenas reduz a quantidade em 1
+            cursor.execute("""
+                UPDATE pedidos SET quantidade = quantidade - 1 WHERE id = %s
+            """, (pedido_id,))
+            print(f"Quantidade reduzida para o pedido ID={pedido_id}. Nova quantidade: {quantidade - 1}")
+        else:
+            # Se a quantidade for 1, move o pedido para 'pedidos_feitos' e remove da tabela 'pedidos'
             cursor.execute("""
                 INSERT INTO pedidos_feitos (nome, nome_produto, preco, quantidade, hora)
                 VALUES (%s, %s, %s, %s, %s)
-            """, (pedido[1], nome_produto, pedido[2], 1, pedido[3]))  # Ajuste na quantidade
+            """, (nome, nome_produto, preco, quantidade, hora))
+            print(f"Pedido movido para pedidos_feitos: ID={pedido_id}, Produto={nome_produto}")
+            
+            cursor.execute("DELETE FROM pedidos WHERE id = %s", (pedido_id,))
+            print(f"Pedido removido da tabela pedidos: ID={pedido_id}")
 
-            # Excluir o pedido da tabela pedidos
-            cursor.execute("DELETE FROM pedidos WHERE id = %s", (pedido[0],))
-        
         connection.commit()
-        return {"message": "Pedidos movidos com sucesso"}
+        return {"message": f"Pedido com o produto '{nome_produto}' processado com sucesso"}
+    
     except Exception as e:
         connection.rollback()
-        print(f"Erro ao mover pedidos: {e}")
-        print(traceback.format_exc())  # Exibir o traceback do erro
-        raise HTTPException(status_code=500, detail="Erro ao mover pedidos no banco de dados")
+        print(f"Erro ao mover pedidos: {e}")  # Log do erro específico
+        raise HTTPException(status_code=500, detail=f"Erro ao mover pedidos no banco de dados: {str(e)}")
+    
     finally:
         cursor.close()
         connection.close()
-
-@app.post("/mover_pedidos/")
-def mover_pedidos(mover_pedido: MovePedido):
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
-    try:
-        # Selecionar o nome do produto pelo RFID
-        cursor.execute("SELECT nome_produto FROM produtos WHERE rfid = %s", (mover_pedido.rfid,))
-        produto = cursor.fetchone()
-
-        # Verificar se o produto foi encontrado
-        if not produto:
-            return {"message": "Nenhum produto encontrado para o RFID fornecido."}
-
-        nome_produto = produto[0]
-
-        # Selecionar os pedidos correspondentes ao nome do produto
-        cursor.execute("""
-            SELECT id, quantidade, preco, hora
-            FROM pedidos
-            WHERE nome_produto = %s
-        """, (nome_produto,))
-        pedidos = cursor.fetchall()
-
-        # Verificar se pedidos foram encontrados
-        if not pedidos:
-            return {"message": "Nenhum pedido encontrado para o produto correspondente."}
-
-        for pedido in pedidos:
-            # Inserir o pedido na tabela pedidos_feitos
-            cursor.execute("""
-                INSERT INTO pedidos_feitos (nome, nome_produto, preco, quantidade, hora)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (pedido[1], nome_produto, pedido[2], 1, pedido[3]))  # Ajuste na quantidade
-
-            # Excluir o pedido da tabela pedidos
-            cursor.execute("DELETE FROM pedidos WHERE id = %s", (pedido[0],))
-        
-        connection.commit()
-        return {"message": "Pedidos movidos com sucesso"}
-    except Exception as e:
-        connection.rollback()
-        print(f"Erro ao mover pedidos: {e}")
-        print(traceback.format_exc())  # Exibir o traceback do erro
-        raise HTTPException(status_code=500, detail="Erro ao mover pedidos no banco de dados")
-    finally:
-        cursor.close()
-        connection.close()
-        
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
