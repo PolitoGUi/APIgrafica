@@ -73,3 +73,8 @@ def process_rfid(data: RFIDData):
     finally:
         cursor.close()
         connection.close()
+
+# Endpoint de ping
+@app.get("/ping")
+def ping():
+    return {"message": "API está funcionando!"}
